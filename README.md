@@ -1,7 +1,7 @@
 # obsidian-agi-workspace-mcp
 
 > **Model Context Protocol (MCP) Server for Obsidian Vaults**  
-> Turn your personal or collaborative Obsidian Vault into a persistent, bidirectional, and structured knowledge workspace for AGI agents (Claude Code, Codex, Hermes Agent, Cursor, VS Code ACP, and Roo-Cline).
+> Turn your personal or collaborative Obsidian Vault into a persistent, bidirectional, and structured knowledge workspace for AGI agents (Claude Code, Codex, Hermes Agent, Cursor, VS Code ACP, and Roo-Cline) — fully integrated with official **Obsidian Headless Sync (`ob`)**.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](https://nodejs.org/)
@@ -12,6 +12,7 @@
 
 ## 🌟 Highlights
 
+- **🔄 Native Obsidian Headless Sync (`ob`) Integration**: Direct integration with the official `obsidian-headless` CLI. Supports automated background continuous synchronization and on-demand trigger/status tools (`sync_vault_ob`).
 - **🧠 Bi-directional Wikilink & Backlink Resolution**: Automatically detects `[[Wikilinks]]`, resolves target notes, maintains live backlink graphs, and discovers orphan notes and broken/dangling links.
 - **🏷️ Structured Frontmatter & Tag Indexing**: Full YAML frontmatter parsing, tag clustering (with support for `#nested/tags` and Unicode/Chinese tags), and exact frontmatter metadata filtering.
 - **📁 Directory & Hierarchy Management**: Dedicated tools for folder creation (`create_folder`), directory listing (`list_folders`), and recursive tree inspection (`get_vault_tree`).
@@ -64,26 +65,30 @@ mcp_servers:
 
 ---
 
-### 2. Kubernetes & Docker Cluster Deployment (SSE Mode)
+### 2. Kubernetes Cluster Deployment with `ob` Sidecar (SSE Mode)
 
 For team knowledge bases, remote agent clusters, or self-hosted GitOps setups (e.g. Talos / FluxCD / K8s):
 
-#### **Run with Docker**
-```bash
-docker run -d \
-  --name obsidian-mcp \
-  -p 8080:8080 \
-  -v /path/to/vault:/vault \
-  -e MCP_TRANSPORT=sse \
-  -e OBSIDIAN_VAULT_PATH=/vault \
-  ghcr.io/yunzaixi-dev/obsidian-agi-workspace-mcp:latest
-```
+#### **Architecture**
+- **PVC 1 (`obsidian-vault-pvc`)**: Persistent markdown storage mounted at `/vault`.
+- **PVC 2 (`obsidian-home-pvc`)**: Persistent `/home/mcp` holding pinned `obsidian-headless` and E2EE auth tokens.
+- **Sidecar Container (`obsidian-sync-sidecar`)**: Runs `ob sync --path /vault --continuous` for bidirectional sync with Obsidian Sync.
+- **MCP Server Container (`mcp-server`)**: Serves SSE endpoint at `http://...:8080/sse` with `/healthz` and `/readyz` probes.
 
-#### **Kubernetes Manifests**
-Ready-to-apply manifests are available under [`deploy/k8s/deployment.yaml`](deploy/k8s/deployment.yaml):
-- Single-replica stateful deployment with `ReadWriteOnce` PVC.
-- Built-in `/healthz` and `/readyz` probes.
-- SSE protocol exposed on ClusterIP Service (`http://obsidian-agi-workspace-mcp.obsidian-workspace.svc.cluster.local:8080/sse`).
+#### **Initial Interactive Bootstrap & Authentication**
+To connect the cluster vault with your Obsidian Sync account:
+1. Apply the manifests: `kubectl apply -f deploy/k8s/deployment.yaml`
+2. Exec into the pod or run the helper script:
+   ```bash
+   kubectl exec -it -n obsidian-workspace deployment/obsidian-agi-workspace-mcp -c obsidian-sync-sidecar -- /bin/sh
+   # Inside the container, run:
+   ob login
+   ob sync-list-remote
+   ob sync-setup --vault <Vault-Name-or-ID> --path /vault --device-name k8s-mcp-pod-01
+   ob sync-config --path /vault --mode bidirectional --conflict-strategy conflict
+   ob sync --path /vault
+   ```
+*(Authentication tokens and E2EE password hashes remain persisted in `obsidian-home-pvc`, surviving pod restarts).*
 
 ---
 
@@ -100,6 +105,7 @@ Ready-to-apply manifests are available under [`deploy/k8s/deployment.yaml`](depl
 | `get_vault_tree` | `subfolder`, `maxDepth` | Retrieve hierarchical tree representation of notes and folders. |
 | `list_tasks` | `completed`, `folder`, `tag` | Gather all markdown task checkboxes (`- [ ]` / `- [x]`) across the vault with line number coordinates. |
 | `analyze_workspace_graph` | _None_ | Analyze topological note connections, count nodes/edges, and identify orphan notes and broken wikilinks. |
+| `sync_vault_ob` | `action`, `mode`, `conflictStrategy` | Trigger on-demand sync cycle or inspect sync state with Obsidian Headless CLI (`ob`). |
 | `delete_item` | `path`, `permanent` | Safely remove a note or folder (moves to `.trash` by default unless `permanent=true`). |
 
 ---
@@ -114,6 +120,7 @@ Ready-to-apply manifests are available under [`deploy/k8s/deployment.yaml`](depl
 | `--host <host>` | `HOST` | `0.0.0.0` | Bind host for SSE/HTTP server |
 | `-s, --subpaths <list>`| `OBSIDIAN_ALLOWED_SUBPATHS`| `None` (Full vault) | Comma-separated list of permitted relative subfolders |
 | `-r, --readonly` | `OBSIDIAN_READONLY` | `false` | When `true`, rejects note creation, edits, and deletions |
+| _None_ | `OB_BIN_PATH` | `ob` | Custom binary path for Obsidian Headless CLI |
 
 ---
 

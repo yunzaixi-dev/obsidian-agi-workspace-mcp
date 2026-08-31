@@ -2,9 +2,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { VaultManager } from './vault.js';
 import { VaultConfig } from './types.js';
+import { ObSyncManager } from './obSync.js';
 
 export function createObsidianServer(config: VaultConfig) {
   const vault = new VaultManager(config);
+  const obSync = new ObSyncManager(config.vaultPath);
 
   const server = new McpServer({
     name: 'obsidian-agi-workspace-mcp',
@@ -302,6 +304,43 @@ export function createObsidianServer(config: VaultConfig) {
     }
   );
 
+  // Tool: sync_vault_ob
+  server.tool(
+    'sync_vault_ob',
+    'Trigger an immediate Obsidian Sync cycle or inspect synchronization state via obsidian-headless (`ob`).',
+    {
+      action: z.enum(['status', 'sync', 'configure']).describe('Action to execute: "status", "sync", or "configure"'),
+      mode: z.enum(['bidirectional', 'pull-only', 'mirror-remote']).optional().describe('Sync mode for configure action'),
+      conflictStrategy: z.enum(['conflict', 'merge']).optional().describe('Conflict resolution strategy for configure action'),
+    },
+    async ({ action, mode, conflictStrategy }) => {
+      try {
+        if (action === 'status') {
+          const status = await obSync.getSyncStatus();
+          return {
+            content: [{ type: 'text', text: JSON.stringify(status, null, 2) }],
+          };
+        } else if (action === 'sync') {
+          const res = await obSync.triggerSync();
+          return {
+            content: [{ type: 'text', text: JSON.stringify(res, null, 2) }],
+          };
+        } else if (action === 'configure') {
+          const res = await obSync.configureSync({ mode, conflictStrategy });
+          return {
+            content: [{ type: 'text', text: JSON.stringify(res, null, 2) }],
+          };
+        }
+        throw new Error(`Unsupported sync action: ${action}`);
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Error managing ob sync: ${err.message}` }],
+        };
+      }
+    }
+  );
+
   // Tool: delete_item
   server.tool(
     'delete_item',
@@ -330,5 +369,5 @@ export function createObsidianServer(config: VaultConfig) {
     }
   );
 
-  return { server, vault };
+  return { server, vault, obSync };
 }

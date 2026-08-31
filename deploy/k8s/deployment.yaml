@@ -15,6 +15,18 @@ spec:
     requests:
       storage: 10Gi
 ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: obsidian-home-pvc
+  namespace: obsidian-workspace
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -23,7 +35,7 @@ metadata:
   labels:
     app.kubernetes.io/name: obsidian-agi-workspace-mcp
 spec:
-  replicas: 1 # Stateful single-replica for local filesystem consistency
+  replicas: 1 # Single stateful replica for local filesystem & sync locking
   strategy:
     type: Recreate
   selector:
@@ -39,7 +51,60 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+      initContainers:
+        - name: init-ob-installer
+          image: node:22-alpine
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Checking pinned obsidian-headless installation..."
+              if [ ! -f /home/mcp/bin/ob ]; then
+                mkdir -p /home/mcp/bin
+                npm install --prefix /home/mcp obsidian-headless@0.0.14
+                ln -sf /home/mcp/node_modules/.bin/ob /home/mcp/bin/ob
+              fi
+          volumeMounts:
+            - name: home-storage
+              mountPath: /home/mcp
       containers:
+        # Container 1: Obsidian Headless Sync Sidecar
+        - name: obsidian-sync-sidecar
+          image: node:22-alpine
+          workingDir: /home/mcp
+          command:
+            - /bin/sh
+            - -c
+            - |
+              export PATH="/home/mcp/bin:/home/mcp/node_modules/.bin:$PATH"
+              export HOME="/home/mcp"
+              export XDG_CONFIG_HOME="/home/mcp/.config"
+              export XDG_DATA_HOME="/home/mcp/.local/share"
+              export XDG_CACHE_HOME="/home/mcp/.cache"
+
+              if [ ! -f /home/mcp/.config/obsidian-headless/auth.json ]; then
+                echo "[Sidecar] Waiting for interactive 'ob login' bootstrap in persistent volume..."
+                while [ ! -f /home/mcp/.config/obsidian-headless/auth.json ]; do
+                  sleep 5
+                done
+              fi
+
+              echo "[Sidecar] Starting continuous obsidian headless sync..."
+              exec ob sync --path /vault --continuous
+          volumeMounts:
+            - name: vault-storage
+              mountPath: /vault
+            - name: home-storage
+              mountPath: /home/mcp
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+
+        # Container 2: Model Context Protocol Server (SSE Mode)
         - name: mcp-server
           image: ghcr.io/yunzaixi-dev/obsidian-agi-workspace-mcp:latest
           imagePullPolicy: IfNotPresent
@@ -54,6 +119,12 @@ spec:
               value: ""
             - name: OBSIDIAN_READONLY
               value: "false"
+            - name: PATH
+              value: "/home/mcp/bin:/home/mcp/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            - name: HOME
+              value: "/home/mcp"
+            - name: XDG_CONFIG_HOME
+              value: "/home/mcp/.config"
           ports:
             - name: http-sse
               containerPort: 8080
@@ -61,6 +132,8 @@ spec:
           volumeMounts:
             - name: vault-storage
               mountPath: /vault
+            - name: home-storage
+              mountPath: /home/mcp
           livenessProbe:
             httpGet:
               path: /healthz
@@ -84,6 +157,9 @@ spec:
         - name: vault-storage
           persistentVolumeClaim:
             claimName: obsidian-vault-pvc
+        - name: home-storage
+          persistentVolumeClaim:
+            claimName: obsidian-home-pvc
 ---
 apiVersion: v1
 kind: Service
