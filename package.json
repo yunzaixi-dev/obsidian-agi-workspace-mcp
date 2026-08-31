@@ -1,0 +1,58 @@
+{
+  "name": "obsidian-agi-workspace-mcp",
+  "version": "0.1.0",
+  "description": "Enterprise-grade Model Context Protocol (MCP) Server transforming Obsidian Vaults into persistent, collaborative AGI workspaces and knowledge networks.",
+  "author": "yunzaixi-dev <186052630+yunzaixi-dev@users.noreply.github.com>",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "obsidian-agi-workspace-mcp": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "check": "tsc --noEmit && vitest run",
+    "format": "prettier --write src/**/*.ts"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "obsidian",
+    "agi",
+    "knowledge-base",
+    "markdown",
+    "llm",
+    "agent-workspace",
+    "wikilinks",
+    "second-brain"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yunzaixi-dev/obsidian-agi-workspace-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yunzaixi-dev/obsidian-agi-workspace-mcp/issues"
+  },
+  "homepage": "https://github.com/yunzaixi-dev/obsidian-agi-workspace-mcp#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "fast-glob": "^3.3.3",
+    "gray-matter": "^4.0.3",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.23.13",
+    "typescript": "^5.8.2",
+    "vitest": "^4.1.11"
+  }
+}

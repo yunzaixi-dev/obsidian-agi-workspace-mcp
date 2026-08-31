@@ -1,0 +1,42 @@
+version: '3'
+
+vars:
+  PROJECT_NAME: obsidian-agi-workspace-mcp
+
+tasks:
+  default:
+    desc: Run standard verification (typecheck, test, build)
+    cmds:
+      - task: check
+
+  install:
+    desc: Install dependencies via pnpm
+    cmds:
+      - pnpm install
+
+  build:
+    desc: Build TypeScript bundles using tsup
+    cmds:
+      - pnpm run build
+
+  test:
+    desc: Run test suite via Vitest
+    cmds:
+      - pnpm run test
+
+  typecheck:
+    desc: Typecheck project using tsc
+    cmds:
+      - pnpm exec tsc --noEmit
+
+  check:
+    desc: Run typecheck, unit tests, and production build
+    cmds:
+      - task: typecheck
+      - task: test
+      - task: build
+
+  dev:
+    desc: Start MCP server in development mode with tsx
+    cmds:
+      - pnpm run dev
