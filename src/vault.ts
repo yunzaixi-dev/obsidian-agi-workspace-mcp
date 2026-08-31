@@ -11,6 +11,8 @@ import {
   GraphNode,
   GraphEdge,
   TaskItem,
+  VaultTreeNode,
+  FolderNode,
 } from './types.js';
 import { MarkdownParser } from './parser.js';
 
@@ -40,10 +42,19 @@ export class VaultManager {
   /**
    * Ensure a requested relative path resolves safely inside the vault and permitted subpaths.
    */
-  public resolveSafePath(relPath: string): { fullPath: string; normalizedRelPath: string } {
-    let cleanRel = path.normalize(relPath).replace(/^[\\\/]+/, '');
-    if (!cleanRel.endsWith('.md') && !path.extname(cleanRel)) {
-      cleanRel += '.md';
+  public resolveSafePath(
+    relPath: string,
+    options?: { isDirectory?: boolean; allowNonMd?: boolean }
+  ): { fullPath: string; normalizedRelPath: string } {
+    let cleanRel = path.normalize(relPath || '.').replace(/^[\\\/]+/, '');
+    if (cleanRel === '.' || cleanRel === '') {
+      cleanRel = '';
+    }
+
+    if (!options?.isDirectory && !options?.allowNonMd && cleanRel !== '') {
+      if (!cleanRel.endsWith('.md') && !path.extname(cleanRel)) {
+        cleanRel += '.md';
+      }
     }
 
     const fullPath = path.resolve(this.vaultPath, cleanRel);
@@ -56,13 +67,18 @@ export class VaultManager {
 
     // Check allowed subpaths if configured
     if (this.allowedSubpaths && this.allowedSubpaths.length > 0) {
-      const isAllowed = this.allowedSubpaths.some(
-        (sub) => relativeToRoot === sub || relativeToRoot.startsWith(sub + path.sep)
-      );
-      if (!isAllowed) {
-        throw new Error(
-          `Access Denied: Path '${relativeToRoot}' is outside permitted subpaths: [${this.allowedSubpaths.join(', ')}]`
+      if (relativeToRoot !== '') {
+        const isAllowed = this.allowedSubpaths.some(
+          (sub) =>
+            relativeToRoot === sub ||
+            relativeToRoot.startsWith(sub + path.sep) ||
+            sub.startsWith(relativeToRoot + path.sep)
         );
+        if (!isAllowed) {
+          throw new Error(
+            `Access Denied: Path '${relativeToRoot}' is outside permitted subpaths: [${this.allowedSubpaths.join(', ')}]`
+          );
+        }
       }
     }
 
@@ -147,7 +163,6 @@ export class VaultManager {
   }
 
   private resolveLinkTarget(linkText: string): string | null {
-    // If it is a direct path match
     let normalized = path.normalize(linkText).replace(/^[\\\/]+/, '');
     if (!normalized.endsWith('.md')) normalized += '.md';
 
@@ -155,7 +170,6 @@ export class VaultManager {
       return normalized;
     }
 
-    // Match by title / basename
     const rawTarget = linkText.replace(/\.md$/i, '').toLowerCase();
     const mapped = this.titleToPath.get(rawTarget);
     if (mapped && this.notesCache.has(mapped)) {
@@ -163,6 +177,132 @@ export class VaultManager {
     }
 
     return null;
+  }
+
+  /**
+   * Create a new folder or ensure folder hierarchy exists.
+   */
+  public async createFolder(folderPath: string): Promise<{ fullPath: string; relativePath: string }> {
+    if (this.readOnly) {
+      throw new Error('Vault is configured in read-only mode.');
+    }
+
+    const { fullPath, normalizedRelPath } = this.resolveSafePath(folderPath, { isDirectory: true });
+    await fs.mkdir(fullPath, { recursive: true });
+    return { fullPath, relativePath: normalizedRelPath };
+  }
+
+  /**
+   * List folders in the vault with note counts and subfolder hierarchy.
+   */
+  public async listFolders(parentFolder?: string): Promise<FolderNode[]> {
+    if (!this.isIndexed) await this.indexVault();
+
+    const folderMap = new Map<string, { subfolders: Set<string>; notesCount: number }>();
+    const rootRel = parentFolder ? path.normalize(parentFolder).replace(/^[\\\/]+|\/+$/g, '') : '';
+
+    // Register root/target folder
+    folderMap.set(rootRel, { subfolders: new Set(), notesCount: 0 });
+
+    for (const [notePath] of this.notesCache.entries()) {
+      const dir = path.dirname(notePath);
+      const normalizedDir = dir === '.' ? '' : dir;
+
+      if (rootRel && !normalizedDir.startsWith(rootRel)) {
+        continue;
+      }
+
+      // Populate hierarchy
+      let current = normalizedDir;
+      while (true) {
+        if (!folderMap.has(current)) {
+          folderMap.set(current, { subfolders: new Set(), notesCount: 0 });
+        }
+        if (current === normalizedDir) {
+          folderMap.get(current)!.notesCount += 1;
+        }
+
+        if (!current || current === rootRel) break;
+        const parent = path.dirname(current);
+        const normParent = parent === '.' ? '' : parent;
+        if (!folderMap.has(normParent)) {
+          folderMap.set(normParent, { subfolders: new Set(), notesCount: 0 });
+        }
+        folderMap.get(normParent)!.subfolders.add(current);
+        current = normParent;
+      }
+    }
+
+    const result: FolderNode[] = [];
+    for (const [fPath, data] of folderMap.entries()) {
+      result.push({
+        path: fPath || '/',
+        name: fPath ? path.basename(fPath) : 'root',
+        subfolders: Array.from(data.subfolders),
+        notesCount: data.notesCount,
+      });
+    }
+
+    return result.sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  /**
+   * Get hierarchical file and folder directory tree of the vault.
+   */
+  public async getVaultTree(subfolder?: string, maxDepth: number = 5): Promise<VaultTreeNode> {
+    const { fullPath, normalizedRelPath } = this.resolveSafePath(subfolder || '', { isDirectory: true });
+
+    async function walk(currentFullPath: string, currentRelPath: string, depth: number): Promise<VaultTreeNode> {
+      const stat = await fs.stat(currentFullPath);
+      const baseName = currentRelPath ? path.basename(currentRelPath) : 'vault';
+
+      if (!stat.isDirectory()) {
+        return {
+          name: baseName,
+          path: currentRelPath,
+          type: baseName.endsWith('.md') ? 'note' : 'file',
+          size: stat.size,
+          mtime: stat.mtimeMs,
+        };
+      }
+
+      const node: VaultTreeNode = {
+        name: baseName,
+        path: currentRelPath || '/',
+        type: 'folder',
+        mtime: stat.mtimeMs,
+        children: [],
+      };
+
+      if (depth >= maxDepth) return node;
+
+      const entries = await fs.readdir(currentFullPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (
+          entry.name.startsWith('.') ||
+          entry.name === 'node_modules' ||
+          entry.name === '.obsidian' ||
+          entry.name === '.git'
+        ) {
+          continue;
+        }
+
+        const childFull = path.join(currentFullPath, entry.name);
+        const childRel = currentRelPath ? path.join(currentRelPath, entry.name) : entry.name;
+        const childNode = await walk(childFull, childRel, depth + 1);
+        node.children!.push(childNode);
+      }
+
+      node.children!.sort((a, b) => {
+        if (a.type === 'folder' && b.type !== 'folder') return -1;
+        if (a.type !== 'folder' && b.type === 'folder') return 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      return node;
+    }
+
+    return walk(fullPath, normalizedRelPath, 1);
   }
 
   /**
@@ -288,8 +428,6 @@ export class VaultManager {
 
     if (options.replaceSection) {
       const cleanHeading = options.replaceSection.heading.replace(/^#+\s*/, '').trim();
-      const escapedHeading = cleanHeading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
       const lines = body.split('\n');
       let startLine = -1;
       let endLine = lines.length;
@@ -307,7 +445,6 @@ export class VaultManager {
               matchedLevel = level;
             }
           } else {
-            // Reached next heading of same or higher hierarchy level
             if (level <= matchedLevel) {
               endLine = i;
               break;
@@ -377,13 +514,18 @@ export class VaultManager {
           if (bodyIndex !== -1) {
             const start = Math.max(0, bodyIndex - 60);
             const end = Math.min(note.body.length, bodyIndex + query.length + 60);
-            snippet = (start > 0 ? '...' : '') + note.body.slice(start, end).replace(/\n/g, ' ') + (end < note.body.length ? '...' : '');
+            snippet =
+              (start > 0 ? '...' : '') +
+              note.body.slice(start, end).replace(/\n/g, ' ') +
+              (end < note.body.length ? '...' : '');
           }
 
           results.push({
             path: notePath,
             title: note.metadata.title,
-            matchedContent: snippet || (titleMatch ? `Matched title: ${note.metadata.title}` : `Matched path: ${notePath}`),
+            matchedContent:
+              snippet ||
+              (titleMatch ? `Matched title: ${note.metadata.title}` : `Matched path: ${notePath}`),
             score: titleMatch ? 100 : pathMatch ? 80 : 50,
             tags: note.metadata.tags,
             frontmatter: note.frontmatter,
@@ -480,21 +622,21 @@ export class VaultManager {
   }
 
   /**
-   * Delete a note (move to .trash or remove).
+   * Delete a note or folder (moves to .trash or removes).
    */
-  public async deleteNote(relPath: string, permanent: boolean = false): Promise<boolean> {
+  public async deleteItem(relPath: string, permanent: boolean = false): Promise<boolean> {
     if (this.readOnly) {
       throw new Error('Vault is configured in read-only mode.');
     }
 
-    const { fullPath, normalizedRelPath } = this.resolveSafePath(relPath);
+    const { fullPath, normalizedRelPath } = this.resolveSafePath(relPath, { isDirectory: true, allowNonMd: true });
 
     if (permanent) {
-      await fs.unlink(fullPath);
+      await fs.rm(fullPath, { recursive: true, force: true });
     } else {
       const trashDir = path.join(this.vaultPath, '.trash');
       await fs.mkdir(trashDir, { recursive: true });
-      const trashDest = path.join(trashDir, path.basename(normalizedRelPath));
+      const trashDest = path.join(trashDir, `${Date.now()}_${path.basename(normalizedRelPath)}`);
       await fs.rename(fullPath, trashDest);
     }
 

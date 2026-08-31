@@ -13,6 +13,7 @@
 
 - **🧠 Bi-directional Wikilink & Backlink Resolution**: Automatically detects `[[Wikilinks]]`, resolves target notes, maintains live backlink graphs, and discovers orphan notes and broken/dangling links.
 - **🏷️ Structured Frontmatter & Tag Indexing**: Full YAML frontmatter parsing, tag clustering (with support for `#nested/tags` and Unicode/Chinese tags), and exact frontmatter metadata filtering.
+- **📁 Directory & Hierarchy Management**: Dedicated tools for folder creation (`create_folder`), directory listing (`list_folders`), and recursive tree inspection (`get_vault_tree`).
 - **🛡️ Sandbox & Path Traversal Security**: Strict root path boundary enforcement, jail containment, and optional `allowedSubpaths` configuration (ideal for exposing only designated vault subdirectories).
 - **📝 Fine-Grained Note Patching**: Append, prepend, regular-expression targeted replacements, frontmatter merging, and hierarchical markdown section replacement (e.g. updating a `## Tasks` section without touching the rest of the note).
 - **✅ Cross-Vault Task Aggregation**: Automatically extracts markdown checklist items (`- [ ]` / `- [x]`) across notes with line tracking and status filters.
@@ -80,13 +81,16 @@ Add to your project's `.cursor/mcp.json` or global configuration:
 
 | Tool | Parameters | Description |
 |---|---|---|
+| `search_vault` | `query`, `tags`, `frontmatterFilter`, `folder`, `limit`, `offset` | Search notes by full-text keywords, tag matches (e.g. `["#tju", "ops"]`), frontmatter fields, or folder boundaries. |
 | `read_note` | `pathOrTitle` | Read note content with YAML frontmatter, raw body, metadata, outgoing wikilinks, and incoming backlinks. Supports both relative paths and wikilink titles. |
 | `write_note` | `path`, `body`, `frontmatter`, `overwrite` | Create or update a note with structured YAML frontmatter and markdown body. Auto-creates intermediate directories. |
 | `patch_note` | `path`, `append`, `prepend`, `replaceSection`, `patchRegex`, `updateFrontmatter` | Apply atomic or targeted edits (e.g. rewrite under a `## Heading`, append logs, or update frontmatter keys). |
-| `search_vault` | `query`, `tags`, `frontmatterFilter`, `folder`, `limit`, `offset` | Search notes by full-text keywords, tag matches (e.g. `["#tju", "ops"]`), frontmatter fields, or folder boundaries. |
+| `create_folder` | `path` | Create a new folder or directory hierarchy inside the vault. |
+| `list_folders` | `parentFolder` | List folder structures with relative paths and contained note counts. |
+| `get_vault_tree` | `subfolder`, `maxDepth` | Retrieve hierarchical tree representation of notes and folders. |
 | `list_tasks` | `completed`, `folder`, `tag` | Gather all markdown task checkboxes (`- [ ]` / `- [x]`) across the vault with line number coordinates. |
 | `analyze_workspace_graph` | _None_ | Analyze topological note connections, count nodes/edges, and identify orphan notes and broken wikilinks. |
-| `delete_note` | `path`, `permanent` | Safely remove a note (moves to `.trash` by default unless `permanent=true`). |
+| `delete_item` | `path`, `permanent` | Safely remove a note or folder (moves to `.trash` by default unless `permanent=true`). |
 
 ---
 

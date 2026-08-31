@@ -1,5 +1,4 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { VaultManager } from './vault.js';
 import { VaultConfig } from './types.js';
@@ -11,6 +10,88 @@ export function createObsidianServer(config: VaultConfig) {
     name: 'obsidian-agi-workspace-mcp',
     version: '0.1.0',
   });
+
+  // Tool: create_folder
+  server.tool(
+    'create_folder',
+    'Create a new folder or directory hierarchy inside the Obsidian vault.',
+    {
+      path: z.string().describe('Relative folder path to create (e.g. "projects/agi" or "vault/ops/cluster-health")'),
+    },
+    async ({ path }) => {
+      try {
+        const result = await vault.createFolder(path);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({ success: true, folder: result.relativePath, fullPath: result.fullPath }, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Error creating folder: ${err.message}` }],
+        };
+      }
+    }
+  );
+
+  // Tool: list_folders
+  server.tool(
+    'list_folders',
+    'List folders and directory structure in the vault with note counts.',
+    {
+      parentFolder: z.string().optional().describe('Filter by parent directory path (e.g. "projects" or "vault/tju")'),
+    },
+    async ({ parentFolder }) => {
+      try {
+        const folders = await vault.listFolders(parentFolder);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({ count: folders.length, folders }, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Error listing folders: ${err.message}` }],
+        };
+      }
+    }
+  );
+
+  // Tool: get_vault_tree
+  server.tool(
+    'get_vault_tree',
+    'Retrieve hierarchical directory tree of folders and notes in the vault for workspace overview.',
+    {
+      subfolder: z.string().optional().describe('Scope tree overview to a subfolder'),
+      maxDepth: z.number().optional().describe('Maximum folder traversal depth (default: 5)'),
+    },
+    async ({ subfolder, maxDepth }) => {
+      try {
+        const tree = await vault.getVaultTree(subfolder, maxDepth);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(tree, null, 2),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Error retrieving vault tree: ${err.message}` }],
+        };
+      }
+    }
+  );
 
   // Tool: read_note
   server.tool(
@@ -221,29 +302,29 @@ export function createObsidianServer(config: VaultConfig) {
     }
   );
 
-  // Tool: delete_note
+  // Tool: delete_item
   server.tool(
-    'delete_note',
-    'Safely delete a note (moves to .trash by default).',
+    'delete_item',
+    'Safely delete a note or folder (moves to .trash by default).',
     {
-      path: z.string().describe('Relative note path'),
+      path: z.string().describe('Relative note or folder path'),
       permanent: z.boolean().optional().describe('Permanently delete instead of moving to .trash (default: false)'),
     },
     async ({ path, permanent }) => {
       try {
-        await vault.deleteNote(path, permanent);
+        await vault.deleteItem(path, permanent);
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({ success: true, message: `Note '${path}' deleted.` }),
+              text: JSON.stringify({ success: true, message: `Path '${path}' deleted.` }),
             },
           ],
         };
       } catch (err: any) {
         return {
           isError: true,
-          content: [{ type: 'text', text: `Error deleting note: ${err.message}` }],
+          content: [{ type: 'text', text: `Error deleting item: ${err.message}` }],
         };
       }
     }

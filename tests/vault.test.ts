@@ -66,7 +66,7 @@ describe('VaultManager Integration', () => {
     );
     await vault.writeNote(
       'Projects/AGI.md',
-      'AGI Project note linked to [[Resources/Models]] and [[index]]. - [ ] Ship MCP',
+      'AGI Project note linked to [[Resources/Models]] and [[index]].\n\n- [ ] Ship MCP',
       { tags: ['project', 'agi'] }
     );
     await vault.writeNote(
@@ -91,6 +91,22 @@ describe('VaultManager Integration', () => {
   it('finds notes by title alias or wikilink target', async () => {
     const note = await vault.getNote('Home Index');
     expect(note.path).toBe('index.md');
+  });
+
+  it('creates folders and lists folder hierarchies', async () => {
+    await vault.createFolder('vault/tju/ml');
+    await vault.writeNote('vault/tju/ml/lecture1.md', '# ML 101');
+
+    const folders = await vault.listFolders();
+    expect(folders.some((f) => f.path === 'vault/tju/ml')).toBe(true);
+    expect(folders.find((f) => f.path === 'vault/tju/ml')?.notesCount).toBe(1);
+  });
+
+  it('generates recursive vault directory tree', async () => {
+    const tree = await vault.getVaultTree();
+    expect(tree.type).toBe('folder');
+    expect(tree.children?.some((c) => c.name === 'Projects')).toBe(true);
+    expect(tree.children?.some((c) => c.name === 'index.md')).toBe(true);
   });
 
   it('patches note with section replacement', async () => {

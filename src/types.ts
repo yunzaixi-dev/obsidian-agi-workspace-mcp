@@ -68,3 +68,19 @@ export interface TaskItem {
   text: string;
   statusTag?: string; // e.g. [ ] / [x] / [/] / [-]
 }
+
+export interface FolderNode {
+  path: string; // relative path from vault root
+  name: string;
+  subfolders: string[];
+  notesCount: number;
+}
+
+export interface VaultTreeNode {
+  name: string;
+  path: string;
+  type: 'folder' | 'note' | 'file';
+  size?: number;
+  mtime?: number;
+  children?: VaultTreeNode[];
+}
