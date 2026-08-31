@@ -2,6 +2,9 @@ export interface VaultConfig {
   vaultPath: string;
   allowedSubpaths?: string[];
   readOnly?: boolean;
+  transport?: 'stdio' | 'sse' | 'http';
+  port?: number;
+  host?: string;
 }
 
 export interface NoteMetadata {

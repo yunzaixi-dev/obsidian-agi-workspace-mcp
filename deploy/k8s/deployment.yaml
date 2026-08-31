@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: obsidian-workspace
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: obsidian-vault-pvc
+  namespace: obsidian-workspace
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: obsidian-agi-workspace-mcp
+  namespace: obsidian-workspace
+  labels:
+    app.kubernetes.io/name: obsidian-agi-workspace-mcp
+spec:
+  replicas: 1 # Stateful single-replica for local filesystem consistency
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obsidian-agi-workspace-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: obsidian-agi-workspace-mcp
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: mcp-server
+          image: ghcr.io/yunzaixi-dev/obsidian-agi-workspace-mcp:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MCP_TRANSPORT
+              value: "sse"
+            - name: PORT
+              value: "8080"
+            - name: OBSIDIAN_VAULT_PATH
+              value: "/vault"
+            - name: OBSIDIAN_ALLOWED_SUBPATHS
+              value: ""
+            - name: OBSIDIAN_READONLY
+              value: "false"
+          ports:
+            - name: http-sse
+              containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - name: vault-storage
+              mountPath: /vault
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-sse
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http-sse
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+      volumes:
+        - name: vault-storage
+          persistentVolumeClaim:
+            claimName: obsidian-vault-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: obsidian-agi-workspace-mcp
+  namespace: obsidian-workspace
+  labels:
+    app.kubernetes.io/name: obsidian-agi-workspace-mcp
+spec:
+  type: ClusterIP
+  ports:
+    - name: http-sse
+      port: 8080
+      targetPort: http-sse
+  selector:
+    app.kubernetes.io/name: obsidian-agi-workspace-mcp

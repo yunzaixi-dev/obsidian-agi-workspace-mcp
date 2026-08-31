@@ -6,6 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](https://nodejs.org/)
 [![MCP Spec](https://img.shields.io/badge/MCP-1.30-purple.svg)](https://modelcontextprotocol.io/)
+[![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](https://github.com/yunzaixi-dev/obsidian-agi-workspace-mcp/pkgs/container/obsidian-agi-workspace-mcp)
 
 ---
 
@@ -15,6 +16,7 @@
 - **🏷️ Structured Frontmatter & Tag Indexing**: Full YAML frontmatter parsing, tag clustering (with support for `#nested/tags` and Unicode/Chinese tags), and exact frontmatter metadata filtering.
 - **📁 Directory & Hierarchy Management**: Dedicated tools for folder creation (`create_folder`), directory listing (`list_folders`), and recursive tree inspection (`get_vault_tree`).
 - **🛡️ Sandbox & Path Traversal Security**: Strict root path boundary enforcement, jail containment, and optional `allowedSubpaths` configuration (ideal for exposing only designated vault subdirectories).
+- **☁️ Cloud & Cluster Native (SSE/HTTP & STDIO)**: Supports traditional CLI/IDE stdio pipes as well as HTTP/SSE transport modes with `/healthz` and `/readyz` endpoints for Kubernetes cluster deployments.
 - **📝 Fine-Grained Note Patching**: Append, prepend, regular-expression targeted replacements, frontmatter merging, and hierarchical markdown section replacement (e.g. updating a `## Tasks` section without touching the rest of the note).
 - **✅ Cross-Vault Task Aggregation**: Automatically extracts markdown checklist items (`- [ ]` / `- [x]`) across notes with line tracking and status filters.
 - **⚡ High Performance & Zero Heavy Overhead**: Built with TypeScript, fast-glob, and gray-matter for instant indexing and minimal memory footprint.
@@ -23,9 +25,9 @@
 
 ## 🚀 Quick Start
 
-### 1. Installation
+### 1. Local CLI & IDEs (Stdio Mode)
 
-You can install globally or run directly via `npx`:
+You can run directly via `npx`:
 
 ```bash
 # Global installation via npm/pnpm
@@ -33,8 +35,6 @@ npm install -g obsidian-agi-workspace-mcp
 # or
 pnpm add -g obsidian-agi-workspace-mcp
 ```
-
-### 2. Configuration for MCP Clients
 
 #### **Claude Desktop (`claude_desktop_config.json`)**
 ```json
@@ -62,18 +62,28 @@ mcp_servers:
       OBSIDIAN_VAULT_PATH: "/home/yun/Desktop/docs/vault"
 ```
 
-#### **Cursor / VS Code MCP Extension**
-Add to your project's `.cursor/mcp.json` or global configuration:
-```json
-{
-  "mcpServers": {
-    "obsidian-workspace": {
-      "command": "node",
-      "args": ["/path/to/obsidian-agi-workspace-mcp/dist/index.js", "--vault", "/path/to/your/vault"]
-    }
-  }
-}
+---
+
+### 2. Kubernetes & Docker Cluster Deployment (SSE Mode)
+
+For team knowledge bases, remote agent clusters, or self-hosted GitOps setups (e.g. Talos / FluxCD / K8s):
+
+#### **Run with Docker**
+```bash
+docker run -d \
+  --name obsidian-mcp \
+  -p 8080:8080 \
+  -v /path/to/vault:/vault \
+  -e MCP_TRANSPORT=sse \
+  -e OBSIDIAN_VAULT_PATH=/vault \
+  ghcr.io/yunzaixi-dev/obsidian-agi-workspace-mcp:latest
 ```
+
+#### **Kubernetes Manifests**
+Ready-to-apply manifests are available under [`deploy/k8s/deployment.yaml`](deploy/k8s/deployment.yaml):
+- Single-replica stateful deployment with `ReadWriteOnce` PVC.
+- Built-in `/healthz` and `/readyz` probes.
+- SSE protocol exposed on ClusterIP Service (`http://obsidian-agi-workspace-mcp.obsidian-workspace.svc.cluster.local:8080/sse`).
 
 ---
 
@@ -99,6 +109,9 @@ Add to your project's `.cursor/mcp.json` or global configuration:
 | CLI Flag | Env Variable | Default | Description |
 |---|---|---|---|
 | `-v, --vault <path>` | `OBSIDIAN_VAULT_PATH` | _Required_ | Absolute filesystem path to the Obsidian vault root |
+| `-t, --transport <mode>` | `MCP_TRANSPORT` | `stdio` | Transport protocol: `stdio` (CLI) or `sse` / `http` (Server) |
+| `-p, --port <port>` | `PORT` | `8080` | Port for SSE/HTTP server |
+| `--host <host>` | `HOST` | `0.0.0.0` | Bind host for SSE/HTTP server |
 | `-s, --subpaths <list>`| `OBSIDIAN_ALLOWED_SUBPATHS`| `None` (Full vault) | Comma-separated list of permitted relative subfolders |
 | `-r, --readonly` | `OBSIDIAN_READONLY` | `false` | When `true`, rejects note creation, edits, and deletions |
 
@@ -119,8 +132,8 @@ pnpm install
 # Run typechecks, unit tests & build
 task check
 
-# Start in development mode
-task dev -- --vault /path/to/vault
+# Start in SSE development mode
+task dev -- --vault /path/to/vault --transport sse --port 8080
 ```
 
 ---
