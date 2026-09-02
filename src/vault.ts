@@ -1,4 +1,6 @@
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import fg from 'fast-glob';
 import {
@@ -39,12 +41,44 @@ export class VaultManager {
     return this.vaultPath;
   }
 
+  private isAllowedPath(relPath: string, includeAncestors: boolean = false): boolean {
+    if (!this.allowedSubpaths || this.allowedSubpaths.length === 0) return true;
+    if (relPath === '') return includeAncestors;
+
+    return this.allowedSubpaths.some(
+      (sub) =>
+        relPath === sub ||
+        relPath.startsWith(sub + path.sep) ||
+        (includeAncestors && sub.startsWith(relPath + path.sep))
+    );
+  }
+
+  private assertNoSymbolicLinks(fullPath: string, originalPath: string): void {
+    const relative = path.relative(this.vaultPath, fullPath);
+    if (!relative) return;
+
+    let current = this.vaultPath;
+    for (const segment of relative.split(path.sep)) {
+      current = path.join(current, segment);
+      try {
+        if (fsSync.lstatSync(current).isSymbolicLink()) {
+          throw new Error(
+            `Security Violation: symbolic link traversal is not allowed: ${originalPath}`
+          );
+        }
+      } catch (err: any) {
+        if (err?.code === 'ENOENT') break;
+        throw err;
+      }
+    }
+  }
+
   /**
    * Ensure a requested relative path resolves safely inside the vault and permitted subpaths.
    */
   public resolveSafePath(
     relPath: string,
-    options?: { isDirectory?: boolean; allowNonMd?: boolean }
+    options?: { isDirectory?: boolean; allowNonMd?: boolean; allowAllowedAncestor?: boolean }
   ): { fullPath: string; normalizedRelPath: string } {
     let cleanRel = path.normalize(relPath || '.').replace(/^[\\\/]+/, '');
     if (cleanRel === '.' || cleanRel === '') {
@@ -66,21 +100,13 @@ export class VaultManager {
     }
 
     // Check allowed subpaths if configured
-    if (this.allowedSubpaths && this.allowedSubpaths.length > 0) {
-      if (relativeToRoot !== '') {
-        const isAllowed = this.allowedSubpaths.some(
-          (sub) =>
-            relativeToRoot === sub ||
-            relativeToRoot.startsWith(sub + path.sep) ||
-            sub.startsWith(relativeToRoot + path.sep)
-        );
-        if (!isAllowed) {
-          throw new Error(
-            `Access Denied: Path '${relativeToRoot}' is outside permitted subpaths: [${this.allowedSubpaths.join(', ')}]`
-          );
-        }
-      }
+    if (!this.isAllowedPath(relativeToRoot, options?.allowAllowedAncestor === true)) {
+      throw new Error(
+        `Access Denied: Path '${relativeToRoot}' is outside permitted subpaths: [${this.allowedSubpaths!.join(', ')}]`
+      );
     }
+
+    this.assertNoSymbolicLinks(fullPath, relPath);
 
     return { fullPath, normalizedRelPath: relativeToRoot };
   }
@@ -250,9 +276,12 @@ export class VaultManager {
    * Get hierarchical file and folder directory tree of the vault.
    */
   public async getVaultTree(subfolder?: string, maxDepth: number = 5): Promise<VaultTreeNode> {
-    const { fullPath, normalizedRelPath } = this.resolveSafePath(subfolder || '', { isDirectory: true });
+    const { fullPath, normalizedRelPath } = this.resolveSafePath(subfolder || '', {
+      isDirectory: true,
+      allowAllowedAncestor: true,
+    });
 
-    async function walk(currentFullPath: string, currentRelPath: string, depth: number): Promise<VaultTreeNode> {
+    const walk = async (currentFullPath: string, currentRelPath: string, depth: number): Promise<VaultTreeNode> => {
       const stat = await fs.stat(currentFullPath);
       const baseName = currentRelPath ? path.basename(currentRelPath) : 'vault';
 
@@ -289,6 +318,9 @@ export class VaultManager {
 
         const childFull = path.join(currentFullPath, entry.name);
         const childRel = currentRelPath ? path.join(currentRelPath, entry.name) : entry.name;
+        if (!this.isAllowedPath(childRel, true) || entry.isSymbolicLink()) {
+          continue;
+        }
         const childNode = await walk(childFull, childRel, depth + 1);
         node.children!.push(childNode);
       }
@@ -300,7 +332,7 @@ export class VaultManager {
       });
 
       return node;
-    }
+    };
 
     return walk(fullPath, normalizedRelPath, 1);
   }
@@ -359,7 +391,7 @@ export class VaultManager {
     relPath: string,
     body: string,
     frontmatter?: Record<string, any>,
-    options?: { overwrite?: boolean }
+    options?: { overwrite?: boolean; expectedSha256?: string }
   ): Promise<NoteMetadata> {
     if (this.readOnly) {
       throw new Error('Vault is configured in read-only mode.');
@@ -376,9 +408,45 @@ export class VaultManager {
       throw new Error(`Note already exists at '${normalizedRelPath}' and overwrite is false.`);
     }
 
+    if (options?.expectedSha256) {
+      if (!/^[a-f0-9]{64}$/i.test(options.expectedSha256)) {
+        throw new Error('expectedSha256 must be a 64-character hexadecimal SHA-256 digest.');
+      }
+      if (!exists) {
+        throw new Error(`Content hash conflict: '${normalizedRelPath}' no longer exists.`);
+      }
+      const currentContent = await fs.readFile(fullPath, 'utf8');
+      const currentSha256 = crypto.createHash('sha256').update(currentContent).digest('hex');
+      if (!crypto.timingSafeEqual(Buffer.from(currentSha256), Buffer.from(options.expectedSha256))) {
+        throw new Error(
+          `Content hash conflict for '${normalizedRelPath}': the note changed after it was read.`,
+        );
+      }
+    }
+
     await fs.mkdir(path.dirname(fullPath), { recursive: true });
     const fileContent = MarkdownParser.stringifyNote(body, frontmatter);
-    await fs.writeFile(fullPath, fileContent, 'utf-8');
+    const tempPath = path.join(
+      path.dirname(fullPath),
+      `.${path.basename(fullPath)}.${process.pid}.${crypto.randomUUID()}.tmp`,
+    );
+    let tempHandle: Awaited<ReturnType<typeof fs.open>> | undefined;
+    try {
+      tempHandle = await fs.open(tempPath, 'wx', 0o600);
+      await tempHandle.writeFile(fileContent, 'utf8');
+      await tempHandle.sync();
+      await tempHandle.close();
+      tempHandle = undefined;
+
+      // Re-run the jail check immediately before the replacing rename.
+      this.resolveSafePath(normalizedRelPath);
+      await fs.rename(tempPath, fullPath);
+    } finally {
+      await tempHandle?.close().catch(() => undefined);
+      await fs.unlink(tempPath).catch((err: NodeJS.ErrnoException) => {
+        if (err.code !== 'ENOENT') throw err;
+      });
+    }
 
     // Update index
     const stat = await fs.stat(fullPath);
@@ -408,6 +476,7 @@ export class VaultManager {
       replaceSection?: { heading: string; content: string };
       patchRegex?: { pattern: string; replacement: string; flags?: string };
       updateFrontmatter?: Record<string, any>;
+      expectedSha256?: string;
     }
   ): Promise<NoteMetadata> {
     if (this.readOnly) {
@@ -467,7 +536,10 @@ export class VaultManager {
       body = body.replace(reg, options.patchRegex.replacement);
     }
 
-    return this.writeNote(note.path, body, frontmatter, { overwrite: true });
+    return this.writeNote(note.path, body, frontmatter, {
+      overwrite: true,
+      expectedSha256: options.expectedSha256,
+    });
   }
 
   /**
@@ -630,6 +702,10 @@ export class VaultManager {
     }
 
     const { fullPath, normalizedRelPath } = this.resolveSafePath(relPath, { isDirectory: true, allowNonMd: true });
+
+    if (!normalizedRelPath) {
+      throw new Error('Refusing to delete the vault root.');
+    }
 
     if (permanent) {
       await fs.rm(fullPath, { recursive: true, force: true });

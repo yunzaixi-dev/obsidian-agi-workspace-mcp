@@ -1,4 +1,5 @@
 import { NoteContent, NoteMetadata, TaskItem } from './types.js';
+import crypto from 'node:crypto';
 import matter from 'gray-matter';
 
 export class MarkdownParser {
@@ -101,6 +102,7 @@ export class MarkdownParser {
     return {
       path: relPath,
       rawContent: rawText,
+      sourceSha256: crypto.createHash('sha256').update(rawText).digest('hex'),
       frontmatter,
       body,
       metadata,

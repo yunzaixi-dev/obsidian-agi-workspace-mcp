@@ -3,7 +3,13 @@ import { CryptoManager } from '../src/crypto.js';
 
 describe('CryptoManager AES-256-GCM', () => {
   const passphrase = 'test-secret-passphrase-2026';
-  const crypto = new CryptoManager({ enabled: true, passphrase });
+  const salt = 'test-unique-salt-2026';
+  const crypto = new CryptoManager({ enabled: true, passphrase, salt });
+
+  it('fails closed when enabled without an explicit key or salt', () => {
+    expect(() => new CryptoManager({ enabled: true, passphrase })).toThrow(/salt/i);
+    expect(() => new CryptoManager({ enabled: true, salt })).toThrow(/passphrase|key/i);
+  });
 
   it('encrypts and decrypts markdown note body seamlessly', () => {
     const rawMarkdown = `---
@@ -26,8 +32,18 @@ tags: [secret, agi]
     const rawMarkdown = 'Top secret data';
     const encrypted = crypto.encryptText(rawMarkdown);
 
-    const wrongCrypto = new CryptoManager({ enabled: true, passphrase: 'wrong-password' });
+    const wrongCrypto = new CryptoManager({
+      enabled: true,
+      passphrase: 'wrong-password',
+      salt,
+    });
     expect(() => wrongCrypto.decryptText(encrypted)).toThrow(/Decryption failed/);
+  });
+
+  it('rejects a malformed payload carrying the encrypted marker', () => {
+    expect(() =>
+      crypto.decryptText('<!-- OBSIDIAN_MCP_ENCRYPTED:v1 -->\nENC[broken]'),
+    ).toThrow(/malformed/i);
   });
 
   it('performs selective Frontmatter key encryption', () => {

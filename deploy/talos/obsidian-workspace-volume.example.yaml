@@ -1,0 +1,20 @@
+# Talos v1.13+ machine-config document.
+# DO NOT APPLY before live `talosctl get disks -o yaml` / `get discoveredvolumes -o yaml`
+# proves the WWID is the intended non-system data disk. TPM encryption requires TPM 2.0;
+# strong protection also requires SecureBoot. Use a reviewed KMS key instead when TPM is unavailable.
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: obsidian-workspace
+provisioning:
+  diskSelector:
+    match: disk.wwid == 'REPLACE_WITH_VERIFIED_DATA_DISK_WWID'
+  minSize: 16GB
+  maxSize: 64GB
+filesystem:
+  type: xfs
+encryption:
+  provider: luks2
+  keys:
+    - slot: 0
+      tpm: {}
+      lockToState: true

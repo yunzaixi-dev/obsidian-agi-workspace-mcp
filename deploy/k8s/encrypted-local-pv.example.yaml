@@ -1,0 +1,35 @@
+# Apply only after the Talos UserVolume reports ready and mounted at
+# /var/mnt/obsidian-workspace on the verified target node.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: obsidian-workspace-encrypted
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: obsidian-workspace-encrypted-pv
+spec:
+  capacity:
+    storage: 12Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: obsidian-workspace-encrypted
+  claimRef:
+    namespace: obsidian-workspace
+    name: obsidian-workspace-pvc
+  local:
+    path: /var/mnt/obsidian-workspace
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - REPLACE_WITH_VERIFIED_NODE_NAME

@@ -2,9 +2,13 @@ export interface VaultConfig {
   vaultPath: string;
   allowedSubpaths?: string[];
   readOnly?: boolean;
-  transport?: 'stdio' | 'sse' | 'http';
+  transport?: 'stdio' | 'streamable-http';
   port?: number;
   host?: string;
+  authToken?: string;
+  allowedHosts?: string[];
+  maxBodyBytes?: number;
+  xPublishQueuePath?: string;
 }
 
 export interface NoteMetadata {
@@ -21,6 +25,7 @@ export interface NoteMetadata {
 export interface NoteContent {
   path: string;
   rawContent: string;
+  sourceSha256: string;
   frontmatter: Record<string, any>;
   body: string;
   metadata: NoteMetadata;

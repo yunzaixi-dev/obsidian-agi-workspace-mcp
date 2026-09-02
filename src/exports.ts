@@ -4,3 +4,5 @@ export * from './vault.js';
 export * from './server.js';
 export * from './obSync.js';
 export * from './crypto.js';
+export * from './httpServer.js';
+export * from './xPublishing.js';

@@ -3,6 +3,7 @@ name: CI & Docker Build
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
@@ -10,49 +11,39 @@ jobs:
   check:
     name: Typecheck, Test and Build
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-
+          node-version: 22
       - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/action-setup@v4
         with:
-          version: 10
-
+          version: 11.3.0
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile=false
-
-      - name: Run TypeScript typecheck
-        run: pnpm exec tsc --noEmit
-
-      - name: Run Vitest unit tests
-        run: pnpm run test
-
+        run: pnpm install --frozen-lockfile
+      - name: Run verified checks
+        run: pnpm run check
       - name: Build distribution packages
         run: pnpm run build
 
   docker:
-    name: Build & Push Docker Image
+    name: Build & Push Isolated Images
     needs: check
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -60,20 +51,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels)
-        id: meta
+      - name: Extract MCP image metadata
+        id: meta-mcp
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest
-            type=sha,format=short
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+            type=semver,pattern={{version}}
+            type=sha,format=long
+      - name: Build and push MCP image
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
+          target: runner
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta-mcp.outputs.tags }}
+          labels: ${{ steps.meta-mcp.outputs.labels }}
+
+      - name: Extract ob-sync image metadata
+        id: meta-sync
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-ob-sync
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha,format=long
+      - name: Build and push ob-sync image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: obsidian-sync
+          push: true
+          tags: ${{ steps.meta-sync.outputs.tags }}
+          labels: ${{ steps.meta-sync.outputs.labels }}

@@ -1,150 +1,246 @@
 # obsidian-agi-workspace-mcp
 
-> **Model Context Protocol (MCP) Server for Obsidian Vaults**  
-> Turn your personal or collaborative Obsidian Vault into a persistent, bidirectional, and structured knowledge workspace for AGI agents (Claude Code, Codex, Hermes Agent, Cursor, VS Code ACP, and Roo-Cline) — fully integrated with official **Obsidian Headless Sync (`ob`)**.
+A security-boundary-first MCP workspace for an Obsidian vault, with controlled X Article publication requests.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Node.js Version](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](https://nodejs.org/)
-[![MCP Spec](https://img.shields.io/badge/MCP-1.30-purple.svg)](https://modelcontextprotocol.io/)
-[![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](https://github.com/yunzaixi-dev/obsidian-agi-workspace-mcp/pkgs/container/obsidian-agi-workspace-mcp)
+> **v0.2 status:** local development and manifest validation are supported. The checked-in Kubernetes manifests are intentionally not production-ready until the encrypted Talos volume, pinned release images, MCP token, Obsidian login, allowed hostname, and target node have been supplied and verified.
 
----
+## Architecture
 
-## 🌟 Highlights
+```text
+Obsidian desktop vault
+        ⇅ Obsidian Sync E2EE
+Talos LUKS2 UserVolume / one PVC
+├── vault/                         mounted only by ob sync
+│   └── projects/x-blog/                the only subtree mounted into MCP
+│       └── .x-publish/            non-secret requests and receipts
+└── ob-home/                       mounted only by ob sync
 
-- **🔄 Native Obsidian Headless Sync (`ob`) Integration**: Direct integration with the official `obsidian-headless` CLI. Supports automated background continuous synchronization and on-demand trigger/status tools (`sync_vault_ob`).
-- **🧠 Bi-directional Wikilink & Backlink Resolution**: Automatically detects `[[Wikilinks]]`, resolves target notes, maintains live backlink graphs, and discovers orphan notes and broken/dangling links.
-- **🏷️ Structured Frontmatter & Tag Indexing**: Full YAML frontmatter parsing, tag clustering (with support for `#nested/tags` and Unicode/Chinese tags), and exact frontmatter metadata filtering.
-- **📁 Directory & Hierarchy Management**: Dedicated tools for folder creation (`create_folder`), directory listing (`list_folders`), and recursive tree inspection (`get_vault_tree`).
-- **🛡️ Sandbox & Path Traversal Security**: Strict root path boundary enforcement, jail containment, and optional `allowedSubpaths` configuration (ideal for exposing only designated vault subdirectories).
-- **☁️ Cloud & Cluster Native (SSE/HTTP & STDIO)**: Supports traditional CLI/IDE stdio pipes as well as HTTP/SSE transport modes with `/healthz` and `/readyz` endpoints for Kubernetes cluster deployments.
-- **📝 Fine-Grained Note Patching**: Append, prepend, regular-expression targeted replacements, frontmatter merging, and hierarchical markdown section replacement (e.g. updating a `## Tasks` section without touching the rest of the note).
-- **✅ Cross-Vault Task Aggregation**: Automatically extracts markdown checklist items (`- [ ]` / `- [x]`) across notes with line tracking and status filters.
-- **⚡ High Performance & Zero Heavy Overhead**: Built with TypeScript, fast-glob, and gray-matter for instant indexing and minimal memory footprint.
+Authenticated Streamable HTTP MCP
+├── read/search/edit allowed notes
+├── render_x_preview
+├── request_x_publish              no X network call
+└── get_x_publication_status
 
----
+Local obsidian-x-publisher
+├── reads the synced request
+├── verifies the current Markdown SHA-256
+├── requires --yes + --expected-sha
+└── invokes local xurl credentials to create/publish an Article
+```
 
-## 🚀 Quick Start
+### Trust boundaries
 
-### 1. Local CLI & IDEs (Stdio Mode)
+- The MCP container does **not** mount the complete vault, Obsidian credentials, or X credentials.
+- The `ob` sidecar mounts the complete vault and its own persistent home; MCP does not.
+- X OAuth remains in the local `xurl` home. It is never placed in Git, the Obsidian vault, the MCP Pod, Kubernetes manifests, or publication receipts.
+- `ob` runs continuously in one sidecar. MCP clients cannot invoke or reconfigure it.
+- Network MCP uses stateless Streamable HTTP at `/mcp`, a Bearer token, an HTTP Host allowlist, a 1 MiB request limit, and no wildcard CORS.
+- X writes are two-stage: the MCP creates an immutable request; the local publisher creates a draft and later publishes it.
+- A request ID is a deterministic idempotency hash over schema version, publication type, account, source path, and source SHA-256.
 
-You can run directly via `npx`:
+Encryption at rest does not protect plaintext from a compromised running Pod. The runtime boundaries above remain necessary even with LUKS2.
+
+## MCP tools
+
+| Tool | Side effect | Purpose |
+|---|---:|---|
+| `create_folder` | Vault write | Create a folder inside the configured boundary. |
+| `list_folders` | None | List permitted folders. |
+| `get_vault_tree` | None | Return only permitted paths; sibling folders are filtered. |
+| `read_note` | None | Read a Markdown note and metadata. |
+| `write_note` | Vault write | Create or overwrite a note. |
+| `patch_note` | Vault write | Patch body, sections, regex matches, or frontmatter. |
+| `search_vault` | None | Search permitted notes. |
+| `list_tasks` | None | Collect Markdown tasks. |
+| `analyze_workspace_graph` | None | Build the permitted wikilink graph. |
+| `delete_item` | Vault write | Trash an item by default; deleting the vault root is rejected. |
+| `render_x_preview` | None | Render the verified X Article payload and source hash. |
+| `request_x_publish` | Queue write | Create/deduplicate a non-secret publication request. |
+| `get_x_publication_status` | None | Read requested/draft-created/published status. |
+
+There is deliberately no `sync_vault_ob`, arbitrary shell, X token inspection, or direct X publish MCP tool.
+
+## Local development
+
+Requirements: Node.js 22+, pnpm 11, and go-task.
 
 ```bash
-# Global installation via npm/pnpm
-npm install -g obsidian-agi-workspace-mcp
-# or
-pnpm add -g obsidian-agi-workspace-mcp
+pnpm install --frozen-lockfile
+task check
 ```
 
-#### **Claude Desktop (`claude_desktop_config.json`)**
-```json
-{
-  "mcpServers": {
-    "obsidian-workspace": {
-      "command": "npx",
-      "args": ["-y", "obsidian-agi-workspace-mcp"],
-      "env": {
-        "OBSIDIAN_VAULT_PATH": "/Users/username/Documents/Obsidian Vault",
-        "OBSIDIAN_ALLOWED_SUBPATHS": "vault,projects,research"
-      }
-    }
-  }
-}
+Stdio mode:
+
+```bash
+OBSIDIAN_VAULT_PATH=/absolute/path/to/vault \
+OBSIDIAN_ALLOWED_SUBPATHS=projects/x-blog \
+pnpm dev
 ```
 
-#### **Hermes Agent (`~/.hermes/config.yaml`)**
+Authenticated HTTP mode:
+
+```bash
+# Create the token file outside the repository and chmod it 0600.
+OBSIDIAN_VAULT_PATH=/absolute/path/to/vault \
+OBSIDIAN_ALLOWED_SUBPATHS=projects/x-blog \
+X_PUBLISH_QUEUE_PATH=projects/x-blog/.x-publish \
+MCP_TRANSPORT=streamable-http \
+MCP_AUTH_TOKEN_FILE=/absolute/private/path/mcp-token \
+MCP_ALLOWED_HOSTS=127.0.0.1,localhost \
+HOST=127.0.0.1 PORT=8080 \
+pnpm dev
+```
+
+Health endpoints are `/healthz` and `/readyz`; the MCP endpoint is `/mcp`.
+
+Hermes HTTP client shape:
+
 ```yaml
 mcp_servers:
   obsidian-workspace:
-    command: npx
-    args: ["-y", "obsidian-agi-workspace-mcp"]
-    env:
-      OBSIDIAN_VAULT_PATH: "/home/yun/Desktop/docs/vault"
+    url: "https://mcp.example.invalid/mcp"
+    headers:
+      Authorization: "Bearer <load-this-from-your-secret-management-workflow>"
+    sampling:
+      enabled: false
 ```
 
----
+Do not commit a real token in Hermes configuration examples or this repository.
 
-### 2. Kubernetes Cluster Deployment with `ob` Sidecar (SSE Mode)
+## X Article workflow
 
-For team knowledge bases, remote agent clusters, or self-hosted GitOps setups (e.g. Talos / FluxCD / K8s):
+### One-time local setup
 
-#### **Architecture**
-- **PVC 1 (`obsidian-vault-pvc`)**: Persistent markdown storage mounted at `/vault`.
-- **PVC 2 (`obsidian-home-pvc`)**: Persistent `/home/mcp` holding pinned `obsidian-headless` and E2EE auth tokens.
-- **Sidecar Container (`obsidian-sync-sidecar`)**: Runs `ob sync --path /vault --continuous` for bidirectional sync with Obsidian Sync.
-- **MCP Server Container (`mcp-server`)**: Serves SSE endpoint at `http://...:8080/sse` with `/healthz` and `/readyz` probes.
-
-#### **Initial Interactive Bootstrap & Authentication**
-To connect the cluster vault with your Obsidian Sync account:
-1. Apply the manifests: `kubectl apply -f deploy/k8s/deployment.yaml`
-2. Exec into the pod or run the helper script:
-   ```bash
-   kubectl exec -it -n obsidian-workspace deployment/obsidian-agi-workspace-mcp -c obsidian-sync-sidecar -- /bin/sh
-   # Inside the container, run:
-   ob login
-   ob sync-list-remote
-   ob sync-setup --vault <Vault-Name-or-ID> --path /vault --device-name k8s-mcp-pod-01
-   ob sync-config --path /vault --mode bidirectional --conflict-strategy conflict
-   ob sync --path /vault
-   ```
-*(Authentication tokens and E2EE password hashes remain persisted in `obsidian-home-pvc`, surviving pod restarts).*
-
----
-
-## 🛠️ Available MCP Tools
-
-| Tool | Parameters | Description |
-|---|---|---|
-| `search_vault` | `query`, `tags`, `frontmatterFilter`, `folder`, `limit`, `offset` | Search notes by full-text keywords, tag matches (e.g. `["#tju", "ops"]`), frontmatter fields, or folder boundaries. |
-| `read_note` | `pathOrTitle` | Read note content with YAML frontmatter, raw body, metadata, outgoing wikilinks, and incoming backlinks. Supports both relative paths and wikilink titles. |
-| `write_note` | `path`, `body`, `frontmatter`, `overwrite` | Create or update a note with structured YAML frontmatter and markdown body. Auto-creates intermediate directories. |
-| `patch_note` | `path`, `append`, `prepend`, `replaceSection`, `patchRegex`, `updateFrontmatter` | Apply atomic or targeted edits (e.g. rewrite under a `## Heading`, append logs, or update frontmatter keys). |
-| `create_folder` | `path` | Create a new folder or directory hierarchy inside the vault. |
-| `list_folders` | `parentFolder` | List folder structures with relative paths and contained note counts. |
-| `get_vault_tree` | `subfolder`, `maxDepth` | Retrieve hierarchical tree representation of notes and folders. |
-| `list_tasks` | `completed`, `folder`, `tag` | Gather all markdown task checkboxes (`- [ ]` / `- [x]`) across the vault with line number coordinates. |
-| `analyze_workspace_graph` | _None_ | Analyze topological note connections, count nodes/edges, and identify orphan notes and broken wikilinks. |
-| `sync_vault_ob` | `action`, `mode`, `conflictStrategy` | Trigger on-demand sync cycle or inspect sync state with Obsidian Headless CLI (`ob`). |
-| `delete_item` | `path`, `permanent` | Safely remove a note or folder (moves to `.trash` by default unless `permanent=true`). |
-
----
-
-## ⚙️ Environment Variables & CLI Flags
-
-| CLI Flag | Env Variable | Default | Description |
-|---|---|---|---|
-| `-v, --vault <path>` | `OBSIDIAN_VAULT_PATH` | _Required_ | Absolute filesystem path to the Obsidian vault root |
-| `-t, --transport <mode>` | `MCP_TRANSPORT` | `stdio` | Transport protocol: `stdio` (CLI) or `sse` / `http` (Server) |
-| `-p, --port <port>` | `PORT` | `8080` | Port for SSE/HTTP server |
-| `--host <host>` | `HOST` | `0.0.0.0` | Bind host for SSE/HTTP server |
-| `-s, --subpaths <list>`| `OBSIDIAN_ALLOWED_SUBPATHS`| `None` (Full vault) | Comma-separated list of permitted relative subfolders |
-| `-r, --readonly` | `OBSIDIAN_READONLY` | `false` | When `true`, rejects note creation, edits, and deletions |
-| _None_ | `OB_BIN_PATH` | `ob` | Custom binary path for Obsidian Headless CLI |
-
----
-
-## 🧑‍💻 Development & Testing
-
-This project uses [go-task](https://taskfile.dev/) and `pnpm`:
+Install and authenticate the official `xurl` CLI manually, outside an agent session. Never paste X credentials into chat or add inline secrets to commands. The safe agent-visible check is:
 
 ```bash
-# Clone repository
-git clone https://github.com/yunzaixi-dev/obsidian-agi-workspace-mcp.git
-cd obsidian-agi-workspace-mcp
-
-# Install dependencies
-pnpm install
-
-# Run typechecks, unit tests & build
-task check
-
-# Start in SSE development mode
-task dev -- --vault /path/to/vault --transport sse --port 8080
+xurl auth status
 ```
 
----
+The account with X credentials is the **only Publisher**.
 
-## 📄 License
+### Request from MCP
 
-[MIT License](LICENSE) © 2026 [yunzaixi-dev](https://github.com/yunzaixi-dev)
+1. Call `render_x_preview` with `sourcePath`.
+2. Review title, body length, payload, and `sourceSha256`.
+3. Call `request_x_publish` with the same path and target X handle.
+4. Wait for Obsidian Sync to report `Fully synced` on the local publisher copy.
+
+### Create and publish locally
+
+Use the request ID and exact source hash returned by MCP:
+
+```bash
+export OBSIDIAN_VAULT_PATH=/absolute/path/to/local/vault
+export OBSIDIAN_ALLOWED_SUBPATHS=projects/x-blog
+export X_PUBLISH_QUEUE_PATH=projects/x-blog/.x-publish
+
+obsidian-x-publisher status <request-id>
+obsidian-x-publisher draft <request-id> \
+  --expected-sha <source-sha256> --app <xurl-app-name> --yes
+obsidian-x-publisher publish <request-id> \
+  --expected-sha <source-sha256> --app <xurl-app-name> --yes
+```
+
+The publisher refuses a stale or mismatched source hash. Receipts contain only request/hash/status/timestamp and public Article/Post IDs.
+
+Current scope is X Articles. The public API does not provide unrestricted editing of published Articles. Ordinary Post editing has separate X account, plan, and time-window constraints and is not represented as an always-available tool.
+
+## Talos encrypted storage gate
+
+The example `deploy/talos/obsidian-workspace-volume.example.yaml` targets Talos 1.13+ and defines a LUKS2 `UserVolumeConfig` using TPM with `lockToState`. It intentionally contains a nonfunctional WWID placeholder.
+
+Before any apply:
+
+1. Inspect the real node with `talosctl get disks -o yaml` and `talosctl get discoveredvolumes -o yaml`.
+2. Prove the selected WWID is the intended **non-system** data disk.
+3. Confirm TPM 2.0 and SecureBoot. If unavailable, design and review a KMS key path instead; do not downgrade to a committed static passphrase.
+4. Copy the example into the infra repository and replace the WWID there.
+5. Preview the exact live-node patch:
+
+   ```bash
+   talosctl patch machineconfig \
+     --talosconfig <repo-local-talosconfig> \
+     --nodes <verified-node> \
+     --patch @<reviewed-volume-patch.yaml> \
+     --dry-run
+   ```
+
+6. Apply only in an approved storage maintenance workflow with a rollback/recovery plan.
+7. Verify `volumestatus u-obsidian-workspace`, `mountstatus u-obsidian-workspace`, and the LUKS2 mapper/filesystem chain in `discoveredvolumes`.
+
+The Kubernetes PV example maps `/var/mnt/obsidian-workspace`, pre-binds the exact claim, uses node affinity, and retains data. Replace `REPLACE_WITH_VERIFIED_NODE_NAME` before use.
+
+## Kubernetes deployment gate
+
+`deploy/k8s/deployment.yaml` expects:
+
+- published `0.2.0` MCP and ob-sync images, pinned by digest in the production overlay;
+- StorageClass/PV `obsidian-workspace-encrypted` backed by the verified Talos LUKS2 volume;
+- Secret `workspace-mcp-auth` with key `token`;
+- Hermes clients in the `devbox` namespace;
+- the selected node label and `edge-us` toleration;
+- the manual bootstrap in `deploy/k8s/bootstrap.example.yaml` to complete before either long-running service starts.
+
+The ob-sync and MCP containers run in separate Pods. The sync Pod can reach DNS and HTTPS; the MCP Pod accepts port 8080 only from `devbox` and has no egress. The only MCP-mounted content is `vault/projects/x-blog`.
+
+Create the MCP Secret from a private file rather than an inline shell value:
+
+```bash
+kubectl -n obsidian-workspace create secret generic workspace-mcp-auth \
+  --from-file=token=/absolute/private/path/mcp-token \
+  --dry-run=client -o yaml > /private/path/workspace-mcp-auth.generated.yaml
+kubectl apply -f /private/path/workspace-mcp-auth.generated.yaml
+```
+
+Keep the generated Secret manifest outside Git and delete it securely after application.
+
+Bootstrap Obsidian only after the encrypted PVC is Bound. Do not add the bootstrap Pod to Flux:
+
+```bash
+kubectl apply -f deploy/k8s/bootstrap.example.yaml
+kubectl exec -it -n obsidian-workspace pod/obsidian-workspace-bootstrap -- ob login
+kubectl exec -it -n obsidian-workspace pod/obsidian-workspace-bootstrap -- ob sync-list-remote
+kubectl exec -it -n obsidian-workspace pod/obsidian-workspace-bootstrap -- \
+  ob sync-setup --vault oh-my-obsidian --path /vault --device-name prod-us-workspace-mcp
+kubectl exec -it -n obsidian-workspace pod/obsidian-workspace-bootstrap -- \
+  ob sync-config --path /vault --mode pull-only --conflict-strategy conflict
+kubectl exec -it -n obsidian-workspace pod/obsidian-workspace-bootstrap -- ob sync --path /vault
+```
+
+Wait for `Fully synced`; a running Pod is not enough. Stop the old cluster-side continuous sync writer, run one final pull, switch the new client to bidirectional mode, and only then create the sentinel:
+
+```bash
+kubectl exec -it -n obsidian-workspace pod/obsidian-workspace-bootstrap -- \
+  ob sync-config --path /vault --mode bidirectional --conflict-strategy conflict
+kubectl exec -it -n obsidian-workspace pod/obsidian-workspace-bootstrap -- ob sync --path /vault
+kubectl exec -n obsidian-workspace pod/obsidian-workspace-bootstrap -- \
+  sh -c 'touch /home/obsidian/.bootstrap-complete'
+kubectl delete -n obsidian-workspace pod/obsidian-workspace-bootstrap
+```
+
+Both Deployments wait for that sentinel, preventing an empty or partially initialized vault from being exposed through MCP.
+
+## Security notes
+
+- Symbolic-link traversal is rejected for every resolved path.
+- Allowed-subpath ancestors may be traversed only for filtered tree display; ordinary reads and writes must be inside an allowed subtree.
+- Publication requests use atomic no-clobber creation and receipts use atomic replacement.
+- HTTP token comparison uses constant-sized SHA-256 digests with timing-safe comparison.
+- The Kubernetes service is ClusterIP-only and guarded by a default-deny NetworkPolicy.
+- All containers run non-root, drop Linux capabilities, disallow privilege escalation, use a read-only root filesystem, and do not receive a service-account token.
+- `src/crypto.ts` remains a field/envelope utility; it is not presented as full-vault encryption. Talos LUKS2 protects persistent storage and Obsidian Sync E2EE protects the remote copy.
+
+## Verification
+
+```bash
+task check
+task manifests:validate
+task images:build
+```
+
+Production acceptance additionally requires a real authenticated MCP client call, an Obsidian bidirectional sync probe, LUKS2 readback, and an X **draft** call before any public Article publish.
+
+## License
+
+[MIT](LICENSE) © 2026 [yunzaixi-dev](https://github.com/yunzaixi-dev)
