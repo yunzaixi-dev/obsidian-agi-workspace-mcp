@@ -40,3 +40,28 @@ tasks:
     desc: Start MCP server in development mode with tsx
     cmds:
       - pnpm run dev
+
+  manifests:validate:
+    desc: Validate Kubernetes application and encrypted local-PV manifests client-side
+    cmds:
+      - kubectl apply --dry-run=client -f deploy/k8s/encrypted-local-pv.example.yaml -o name
+      - kubectl apply --dry-run=client -f deploy/k8s/deployment.yaml -o name
+      - kubectl apply --dry-run=client -f deploy/k8s/bootstrap.example.yaml -o name
+
+  images:build:
+    desc: Build both non-root runtime targets locally
+    cmds:
+      - docker build --network={{.DOCKER_BUILD_NETWORK | default "host"}} --target runner -t obsidian-agi-workspace-mcp:local .
+      - docker build --network={{.DOCKER_BUILD_NETWORK | default "host"}} --target obsidian-sync -t obsidian-agi-workspace-mcp-ob-sync:local .
+
+  talos:volume:dry-run:
+    desc: Preview the Talos LUKS2 UserVolume patch; never applies it
+    requires:
+      vars: [TALOSCONFIG, TALOS_NODE, TALOS_VOLUME_PATCH]
+    cmds:
+      - >-
+        talosctl patch machineconfig
+        --talosconfig "{{.TALOSCONFIG}}"
+        --nodes "{{.TALOS_NODE}}"
+        --patch "@{{.TALOS_VOLUME_PATCH}}"
+        --dry-run

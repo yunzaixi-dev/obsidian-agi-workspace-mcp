@@ -2,15 +2,21 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { VaultManager } from './vault.js';
 import { VaultConfig } from './types.js';
-import { ObSyncManager } from './obSync.js';
+import { XPublicationQueue } from './xPublishing.js';
 
 export function createObsidianServer(config: VaultConfig) {
   const vault = new VaultManager(config);
-  const obSync = new ObSyncManager(config.vaultPath);
+  const xPublishing = config.xPublishQueuePath
+    ? new XPublicationQueue({
+        vaultPath: config.vaultPath,
+        allowedSubpaths: config.allowedSubpaths,
+        queuePath: config.xPublishQueuePath,
+      })
+    : undefined;
 
   const server = new McpServer({
     name: 'obsidian-agi-workspace-mcp',
-    version: '0.1.0',
+    version: '0.2.0',
   });
 
   // Tool: create_folder
@@ -131,10 +137,18 @@ export function createObsidianServer(config: VaultConfig) {
       body: z.string().describe('Markdown body text'),
       frontmatter: z.record(z.string(), z.any()).optional().describe('YAML frontmatter key-value pairs (tags, aliases, status, etc.)'),
       overwrite: z.boolean().optional().describe('Whether to overwrite if file exists (default: true)'),
+      expectedSha256: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/i)
+        .optional()
+        .describe('Reject the write if the current note no longer matches this SHA-256'),
     },
-    async ({ path, body, frontmatter, overwrite }) => {
+    async ({ path, body, frontmatter, overwrite, expectedSha256 }) => {
       try {
-        const meta = await vault.writeNote(path, body, frontmatter, { overwrite });
+        const meta = await vault.writeNote(path, body, frontmatter, {
+          overwrite,
+          expectedSha256,
+        });
         return {
           content: [
             {
@@ -179,8 +193,21 @@ export function createObsidianServer(config: VaultConfig) {
         .record(z.string(), z.any())
         .optional()
         .describe('Frontmatter keys to merge or update'),
+      expectedSha256: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/i)
+        .optional()
+        .describe('Reject the patch if the current note no longer matches this SHA-256'),
     },
-    async ({ path, append, prepend, replaceSection, patchRegex, updateFrontmatter }) => {
+    async ({
+      path,
+      append,
+      prepend,
+      replaceSection,
+      patchRegex,
+      updateFrontmatter,
+      expectedSha256,
+    }) => {
       try {
         const meta = await vault.patchNote(path, {
           append,
@@ -188,6 +215,7 @@ export function createObsidianServer(config: VaultConfig) {
           replaceSection,
           patchRegex,
           updateFrontmatter,
+          expectedSha256,
         });
         return {
           content: [
@@ -304,42 +332,65 @@ export function createObsidianServer(config: VaultConfig) {
     }
   );
 
-  // Tool: sync_vault_ob
-  server.tool(
-    'sync_vault_ob',
-    'Trigger an immediate Obsidian Sync cycle or inspect synchronization state via obsidian-headless (`ob`).',
-    {
-      action: z.enum(['status', 'sync', 'configure']).describe('Action to execute: "status", "sync", or "configure"'),
-      mode: z.enum(['bidirectional', 'pull-only', 'mirror-remote']).optional().describe('Sync mode for configure action'),
-      conflictStrategy: z.enum(['conflict', 'merge']).optional().describe('Conflict resolution strategy for configure action'),
-    },
-    async ({ action, mode, conflictStrategy }) => {
-      try {
-        if (action === 'status') {
-          const status = await obSync.getSyncStatus();
+  if (xPublishing) {
+    server.tool(
+      'render_x_preview',
+      'Render a hash-bound X Article preview from a Markdown file without performing a remote write.',
+      {
+        sourcePath: z.string().describe('Markdown source path inside an allowed vault subpath'),
+      },
+      async ({ sourcePath }) => {
+        try {
+          const preview = await xPublishing.previewSource(sourcePath);
+          return { content: [{ type: 'text', text: JSON.stringify(preview, null, 2) }] };
+        } catch (err: any) {
           return {
-            content: [{ type: 'text', text: JSON.stringify(status, null, 2) }],
-          };
-        } else if (action === 'sync') {
-          const res = await obSync.triggerSync();
-          return {
-            content: [{ type: 'text', text: JSON.stringify(res, null, 2) }],
-          };
-        } else if (action === 'configure') {
-          const res = await obSync.configureSync({ mode, conflictStrategy });
-          return {
-            content: [{ type: 'text', text: JSON.stringify(res, null, 2) }],
+            isError: true,
+            content: [{ type: 'text', text: `Error rendering X preview: ${err.message}` }],
           };
         }
-        throw new Error(`Unsupported sync action: ${action}`);
-      } catch (err: any) {
-        return {
-          isError: true,
-          content: [{ type: 'text', text: `Error managing ob sync: ${err.message}` }],
-        };
       }
-    }
-  );
+    );
+
+    server.tool(
+      'request_x_publish',
+      'Create an immutable, sync-safe X Article publication request. This never calls X or accesses OAuth credentials.',
+      {
+        sourcePath: z.string().describe('Markdown source path inside an allowed vault subpath'),
+        targetAccount: z.string().describe('Target X handle such as @yunzaixi'),
+      },
+      async ({ sourcePath, targetAccount }) => {
+        try {
+          const result = await xPublishing.requestArticle(sourcePath, targetAccount);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        } catch (err: any) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Error creating X publication request: ${err.message}` }],
+          };
+        }
+      }
+    );
+
+    server.tool(
+      'get_x_publication_status',
+      'Read the sync-safe status or receipt for an X publication request.',
+      {
+        requestId: z.string().regex(/^[a-f0-9]{64}$/).describe('Publication request ID'),
+      },
+      async ({ requestId }) => {
+        try {
+          const status = await xPublishing.getStatus(requestId);
+          return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
+        } catch (err: any) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Error reading X publication status: ${err.message}` }],
+          };
+        }
+      }
+    );
+  }
 
   // Tool: delete_item
   server.tool(
@@ -369,5 +420,5 @@ export function createObsidianServer(config: VaultConfig) {
     }
   );
 
-  return { server, vault, obSync };
+  return { server, vault, xPublishing };
 }

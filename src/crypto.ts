@@ -17,10 +17,20 @@ export class CryptoManager {
       config?.enabled ??
       (Boolean(config?.passphrase) || process.env.OBSIDIAN_ENCRYPTION_ENABLED === 'true');
     const passphrase = config?.passphrase || process.env.OBSIDIAN_ENCRYPTION_KEY;
-    const salt = config?.salt || process.env.OBSIDIAN_ENCRYPTION_SALT || 'obsidian-agi-workspace-salt';
+    const salt = config?.salt || process.env.OBSIDIAN_ENCRYPTION_SALT;
 
-    if (this.enabled && passphrase) {
-      // Derive a 256-bit key using scrypt
+    if (this.enabled) {
+      if (!passphrase) {
+        throw new Error(
+          'Encryption is enabled, but no passphrase/key was configured.',
+        );
+      }
+      if (!salt) {
+        throw new Error(
+          'Encryption is enabled, but no explicit salt was configured.',
+        );
+      }
+      // Derive a 256-bit key using scrypt. This helper is not the vault-at-rest layer.
       this.key = crypto.scryptSync(passphrase, salt, 32);
     }
   }
@@ -63,12 +73,15 @@ export class CryptoManager {
 
     const match = /ENC\[AES256_GCM,iv:([0-9a-fA-F]+),tag:([0-9a-fA-F]+),data:([A-Za-z0-9+/=]+)\]/.exec(rawText);
     if (!match) {
-      return rawText;
+      throw new Error('Malformed AES-256-GCM encrypted payload.');
     }
 
     const [, ivHex, tagHex, dataBase64] = match;
     const iv = Buffer.from(ivHex, 'hex');
     const tag = Buffer.from(tagHex, 'hex');
+    if (iv.length !== 12 || tag.length !== 16) {
+      throw new Error('Malformed AES-256-GCM encrypted payload.');
+    }
 
     const decipher = crypto.createDecipheriv(this.algorithm, this.key!, iv) as DecipherGCM;
     decipher.setAuthTag(tag);

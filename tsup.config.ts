@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     exports: 'src/exports.ts',
+    publisherCli: 'src/publisherCli.ts',
   },
   format: ['esm'],
   target: 'node20',

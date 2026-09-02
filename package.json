@@ -1,15 +1,17 @@
 {
   "name": "obsidian-agi-workspace-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "packageManager": "pnpm@11.3.0",
   "description": "Enterprise-grade Model Context Protocol (MCP) Server transforming Obsidian Vaults into persistent, collaborative AGI workspaces and knowledge networks.",
   "author": "yunzaixi-dev <186052630+yunzaixi-dev@users.noreply.github.com>",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "obsidian-agi-workspace-mcp": "./dist/index.js"
+    "obsidian-agi-workspace-mcp": "./dist/index.js",
+    "obsidian-x-publisher": "./dist/publisherCli.js"
   },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/exports.js",
+  "types": "./dist/exports.d.ts",
   "files": [
     "dist",
     "README.md",

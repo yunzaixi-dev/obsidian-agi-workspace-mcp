@@ -2,30 +2,143 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: obsidian-workspace
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workspace-mcp
+  namespace: obsidian-workspace
+automountServiceAccountToken: false
+---
+# This claim intentionally remains Pending until a preflighted Talos LUKS2
+# UserVolume and its statically pre-bound local PV exist on the selected node.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: obsidian-vault-pvc
+  name: obsidian-workspace-pvc
   namespace: obsidian-workspace
 spec:
+  storageClassName: obsidian-workspace-encrypted
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 10Gi
+      storage: 12Gi
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: obsidian-home-pvc
+  name: obsidian-workspace-sync
   namespace: obsidian-workspace
+  labels:
+    app.kubernetes.io/name: obsidian-agi-workspace-mcp
+    app.kubernetes.io/component: obsidian-sync
+    app.kubernetes.io/version: "0.2.0"
 spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 2Gi
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: obsidian-agi-workspace-mcp
+      app.kubernetes.io/component: obsidian-sync
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: obsidian-agi-workspace-mcp
+        app.kubernetes.io/component: obsidian-sync
+        app.kubernetes.io/version: "0.2.0"
+    spec:
+      serviceAccountName: workspace-mcp
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: prod-us-research-01
+      tolerations:
+        - key: edge-us
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: initialize-workspace-layout
+          image: ghcr.io/yunzaixi-dev/obsidian-agi-workspace-mcp:0.2.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - mkdir -p /encrypted-workspace/vault/projects/x-blog/.x-publish /encrypted-workspace/ob-home
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: workspace-storage
+              mountPath: /encrypted-workspace
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: obsidian-sync
+          image: ghcr.io/yunzaixi-dev/obsidian-agi-workspace-mcp-ob-sync:0.2.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              sentinel="${HOME}/.bootstrap-complete"
+              until [ -f "${sentinel}" ]; do
+                echo "[obsidian-sync] waiting for bootstrap sentinel"
+                sleep 5
+              done
+              exec ob sync --path /vault --continuous
+          env:
+            - name: HOME
+              value: /home/obsidian
+            - name: XDG_CONFIG_HOME
+              value: /home/obsidian/.config
+            - name: XDG_DATA_HOME
+              value: /home/obsidian/.local/share
+            - name: XDG_CACHE_HOME
+              value: /home/obsidian/.cache
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: workspace-storage
+              mountPath: /vault
+              subPath: vault
+            - name: workspace-storage
+              mountPath: /home/obsidian
+              subPath: ob-home
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: workspace-storage
+          persistentVolumeClaim:
+            claimName: obsidian-workspace-pvc
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -34,132 +147,138 @@ metadata:
   namespace: obsidian-workspace
   labels:
     app.kubernetes.io/name: obsidian-agi-workspace-mcp
+    app.kubernetes.io/component: mcp-server
+    app.kubernetes.io/version: "0.2.0"
 spec:
-  replicas: 1 # Single stateful replica for local filesystem & sync locking
+  replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: obsidian-agi-workspace-mcp
+      app.kubernetes.io/component: mcp-server
   template:
     metadata:
       labels:
         app.kubernetes.io/name: obsidian-agi-workspace-mcp
+        app.kubernetes.io/component: mcp-server
+        app.kubernetes.io/version: "0.2.0"
     spec:
+      serviceAccountName: workspace-mcp
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: prod-us-research-01
+      tolerations:
+        - key: edge-us
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
-        - name: init-ob-installer
-          image: node:22-alpine
+        - name: wait-for-workspace-bootstrap
+          image: ghcr.io/yunzaixi-dev/obsidian-agi-workspace-mcp:0.2.0
+          imagePullPolicy: IfNotPresent
           command:
             - /bin/sh
             - -c
             - |
-              echo "Checking pinned obsidian-headless installation..."
-              if [ ! -f /home/mcp/bin/ob ]; then
-                mkdir -p /home/mcp/bin
-                npm install --prefix /home/mcp obsidian-headless@0.0.14
-                ln -sf /home/mcp/node_modules/.bin/ob /home/mcp/bin/ob
-              fi
+              set -eu
+              mkdir -p /encrypted-workspace/vault/projects/x-blog/.x-publish
+              until [ -f /encrypted-workspace/ob-home/.bootstrap-complete ]; do
+                echo "[workspace-mcp] waiting for bootstrap sentinel"
+                sleep 5
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           volumeMounts:
-            - name: home-storage
-              mountPath: /home/mcp
+            - name: workspace-storage
+              mountPath: /encrypted-workspace
+            - name: tmp
+              mountPath: /tmp
       containers:
-        # Container 1: Obsidian Headless Sync Sidecar
-        - name: obsidian-sync-sidecar
-          image: node:22-alpine
-          workingDir: /home/mcp
-          command:
-            - /bin/sh
-            - -c
-            - |
-              export PATH="/home/mcp/bin:/home/mcp/node_modules/.bin:$PATH"
-              export HOME="/home/mcp"
-              export XDG_CONFIG_HOME="/home/mcp/.config"
-              export XDG_DATA_HOME="/home/mcp/.local/share"
-              export XDG_CACHE_HOME="/home/mcp/.cache"
-
-              if [ ! -f /home/mcp/.config/obsidian-headless/auth.json ]; then
-                echo "[Sidecar] Waiting for interactive 'ob login' bootstrap in persistent volume..."
-                while [ ! -f /home/mcp/.config/obsidian-headless/auth.json ]; do
-                  sleep 5
-                done
-              fi
-
-              echo "[Sidecar] Starting continuous obsidian headless sync..."
-              exec ob sync --path /vault --continuous
-          volumeMounts:
-            - name: vault-storage
-              mountPath: /vault
-            - name: home-storage
-              mountPath: /home/mcp
-          resources:
-            limits:
-              cpu: 500m
-              memory: 256Mi
-            requests:
-              cpu: 50m
-              memory: 64Mi
-
-        # Container 2: Model Context Protocol Server (SSE Mode)
         - name: mcp-server
-          image: ghcr.io/yunzaixi-dev/obsidian-agi-workspace-mcp:latest
+          image: ghcr.io/yunzaixi-dev/obsidian-agi-workspace-mcp:0.2.0
           imagePullPolicy: IfNotPresent
           env:
             - name: MCP_TRANSPORT
-              value: "sse"
+              value: "streamable-http"
+            - name: HOST
+              value: "0.0.0.0"
             - name: PORT
               value: "8080"
+            - name: MCP_ALLOWED_HOSTS
+              value: "obsidian-agi-workspace-mcp,obsidian-agi-workspace-mcp.obsidian-workspace.svc,obsidian-agi-workspace-mcp.obsidian-workspace.svc.cluster.local"
+            - name: MCP_AUTH_TOKEN_FILE
+              value: "/run/secrets/mcp/token"
+            - name: MCP_MAX_BODY_BYTES
+              value: "1048576"
             - name: OBSIDIAN_VAULT_PATH
-              value: "/vault"
+              value: "/workspace"
             - name: OBSIDIAN_ALLOWED_SUBPATHS
-              value: ""
+              value: "x-blog"
             - name: OBSIDIAN_READONLY
               value: "false"
-            - name: PATH
-              value: "/home/mcp/bin:/home/mcp/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            - name: X_PUBLISH_QUEUE_PATH
+              value: "x-blog/.x-publish"
             - name: HOME
-              value: "/home/mcp"
-            - name: XDG_CONFIG_HOME
-              value: "/home/mcp/.config"
+              value: "/tmp/mcp"
           ports:
-            - name: http-sse
+            - name: mcp
               containerPort: 8080
               protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           volumeMounts:
-            - name: vault-storage
-              mountPath: /vault
-            - name: home-storage
-              mountPath: /home/mcp
+            - name: workspace-storage
+              mountPath: /workspace/x-blog
+              subPath: vault/projects/x-blog
+            - name: mcp-auth
+              mountPath: /run/secrets/mcp
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
           livenessProbe:
             httpGet:
               path: /healthz
-              port: http-sse
+              port: mcp
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /readyz
-              port: http-sse
+              port: mcp
             initialDelaySeconds: 3
             periodSeconds: 5
           resources:
-            limits:
-              cpu: 1000m
-              memory: 512Mi
             requests:
               cpu: 100m
               memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
       volumes:
-        - name: vault-storage
+        - name: workspace-storage
           persistentVolumeClaim:
-            claimName: obsidian-vault-pvc
-        - name: home-storage
-          persistentVolumeClaim:
-            claimName: obsidian-home-pvc
+            claimName: obsidian-workspace-pvc
+        - name: mcp-auth
+          secret:
+            secretName: workspace-mcp-auth
+            defaultMode: 0440
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
 ---
 apiVersion: v1
 kind: Service
@@ -168,11 +287,70 @@ metadata:
   namespace: obsidian-workspace
   labels:
     app.kubernetes.io/name: obsidian-agi-workspace-mcp
+    app.kubernetes.io/component: mcp-server
 spec:
   type: ClusterIP
   ports:
-    - name: http-sse
+    - name: mcp
       port: 8080
-      targetPort: http-sse
+      targetPort: mcp
   selector:
     app.kubernetes.io/name: obsidian-agi-workspace-mcp
+    app.kubernetes.io/component: mcp-server
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: workspace-mcp-boundary
+  namespace: obsidian-workspace
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: obsidian-agi-workspace-mcp
+      app.kubernetes.io/component: mcp-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: devbox
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: obsidian-sync-boundary
+  namespace: obsidian-workspace
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: obsidian-agi-workspace-mcp
+      app.kubernetes.io/component: obsidian-sync
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443

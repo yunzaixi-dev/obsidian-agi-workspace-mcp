@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { MarkdownParser } from '../src/parser.js';
@@ -93,6 +94,23 @@ describe('VaultManager Integration', () => {
     expect(note.path).toBe('index.md');
   });
 
+  it('rejects a stale hash-bound write after an external sync change', async () => {
+    const note = await vault.getNote('index.md');
+    const expectedHash = crypto.createHash('sha256').update(note.rawContent).digest('hex');
+    expect(note.sourceSha256).toBe(expectedHash);
+
+    const syncedContent = '# Synced elsewhere\n';
+    await fs.writeFile(path.join(tmpVault, 'index.md'), syncedContent, 'utf8');
+
+    await expect(
+      vault.writeNote('index.md', 'stale local edit', undefined, {
+        overwrite: true,
+        expectedSha256: expectedHash,
+      }),
+    ).rejects.toThrow(/hash/i);
+    expect(await fs.readFile(path.join(tmpVault, 'index.md'), 'utf8')).toBe(syncedContent);
+  });
+
   it('creates folders and lists folder hierarchies', async () => {
     await vault.createFolder('vault/tju/ml');
     await vault.writeNote('vault/tju/ml/lecture1.md', '# ML 101');
@@ -126,6 +144,41 @@ describe('VaultManager Integration', () => {
 
   it('enforces path traversal boundaries', async () => {
     expect(() => vault.resolveSafePath('../../etc/passwd')).toThrow(/Security Violation/);
+  });
+
+  it('does not expose sibling folders through an allowed-subpath root tree', async () => {
+    await fs.mkdir(path.join(tmpVault, 'public'), { recursive: true });
+    await fs.mkdir(path.join(tmpVault, 'private'), { recursive: true });
+    await fs.writeFile(path.join(tmpVault, 'public', 'visible.md'), 'visible');
+    await fs.writeFile(path.join(tmpVault, 'private', 'hidden.md'), 'hidden');
+
+    const restricted = new VaultManager({ vaultPath: tmpVault, allowedSubpaths: ['public'] });
+    const tree = await restricted.getVaultTree();
+    const names = tree.children?.map((child) => child.name) ?? [];
+
+    expect(names).toContain('public');
+    expect(names).not.toContain('private');
+  });
+
+  it('rejects symlinks that escape the vault', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'obsidian-mcp-outside-'));
+    try {
+      await fs.writeFile(path.join(outside, 'secret.md'), 'outside secret');
+      await fs.mkdir(path.join(tmpVault, 'public'), { recursive: true });
+      await fs.symlink(outside, path.join(tmpVault, 'public', 'escape'));
+
+      const restricted = new VaultManager({ vaultPath: tmpVault, allowedSubpaths: ['public'] });
+      await expect(restricted.getNote('public/escape/secret.md')).rejects.toThrow(
+        /symbolic link/i
+      );
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to delete the vault root', async () => {
+    await expect(vault.deleteItem('', true)).rejects.toThrow(/vault root/i);
+    await expect(fs.stat(tmpVault)).resolves.toBeDefined();
   });
 
   it('analyzes workspace graph, orphans, and dangling links', async () => {

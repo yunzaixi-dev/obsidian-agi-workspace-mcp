@@ -1,0 +1,82 @@
+# Manual-only bootstrap Pod. Do not add this file to a Flux kustomization.
+# Apply after the encrypted local PV/PVC is Bound, then exec interactively to run:
+#   ob login
+#   ob sync-list-remote
+#   ob sync-setup --vault oh-my-obsidian --path /vault --device-name prod-us-workspace-mcp
+#   ob sync-config --path /vault --mode pull-only --conflict-strategy conflict
+#   ob sync --path /vault
+# Do not create /home/obsidian/.bootstrap-complete until the old cluster sync
+# sidecar is stopped and the final bidirectional sync has completed.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: obsidian-workspace-bootstrap
+  namespace: obsidian-workspace
+  labels:
+    app.kubernetes.io/name: obsidian-agi-workspace-mcp
+    app.kubernetes.io/component: obsidian-sync
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  nodeSelector:
+    kubernetes.io/hostname: prod-us-research-01
+  tolerations:
+    - key: edge-us
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: bootstrap
+      image: ghcr.io/yunzaixi-dev/obsidian-agi-workspace-mcp-ob-sync:0.2.0
+      imagePullPolicy: IfNotPresent
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          echo "Bootstrap shell is ready; use kubectl exec -it to run ob interactively."
+          exec sleep 86400
+      env:
+        - name: HOME
+          value: /home/obsidian
+        - name: XDG_CONFIG_HOME
+          value: /home/obsidian/.config
+        - name: XDG_DATA_HOME
+          value: /home/obsidian/.local/share
+        - name: XDG_CACHE_HOME
+          value: /home/obsidian/.cache
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: workspace-storage
+          mountPath: /vault
+          subPath: vault
+        - name: workspace-storage
+          mountPath: /home/obsidian
+          subPath: ob-home
+        - name: tmp
+          mountPath: /tmp
+      resources:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+  volumes:
+    - name: workspace-storage
+      persistentVolumeClaim:
+        claimName: obsidian-workspace-pvc
+    - name: tmp
+      emptyDir:
+        sizeLimit: 128Mi
